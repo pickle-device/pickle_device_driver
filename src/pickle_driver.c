@@ -24,9 +24,11 @@ static struct mmap_paddr_tracker mmap_tracker;
 const u64 pickle_device_paddr = 0x10110000;
 const u64 pickle_device_data_paddr = 0x10110008;
 const u64 pickle_device_spec_paddr = 0x10110010;
+const u64 pickle_device_perf_paddr = 0x10120000;
 void __iomem *pickle_device_ptr;
 void __iomem *pickle_device_data_ptr;
 void __iomem *pickle_device_spec_ptr;
+void __iomem *pickle_device_perf_ptr;
 
 u64 read_spec_from_device(u64 field);
 
@@ -45,7 +47,8 @@ static long pickle_driver_ioctl(struct file *file, unsigned ioc,
   pr_info("%s: ioc = %d, %d\n", __func__, ioc,
           ioc == IOC_PICKLE_DRIVER_GET_DEVICE_SPECS);
 
-  if (ioc == ARM64_IOC_PICKLE_DRIVER_MMAP_PADDR) {
+  // Here we return the type 1 or type 2 communication channel address
+  if (ioc == ARM64_IOC_PICKLE_DRIVER_MMAP_PADDR || ioc == ARM64_IOC_PICKLE_DRIVER_PERF_PAGE_PADDR) {
     struct mmap_paddr_params __user *u_params;
     struct mmap_paddr_params k_params;
 
@@ -57,7 +60,11 @@ static long pickle_driver_ioctl(struct file *file, unsigned ioc,
       return err;
     }
 
-    k_params.paddr = mmap_tracker.paddrs[0];
+    if (ioc == ARM64_IOC_PICKLE_DRIVER_MMAP_PADDR) { // type 1
+      k_params.paddr = mmap_tracker.paddrs[0];
+    } else if (ioc == ARM64_IOC_PICKLE_DRIVER_PERF_PAGE_PADDR) { // type 2
+      k_params.paddr = pickle_device_perf_paddr;
+    }
 
     err = copy_to_user(&(u_params->paddr), &(k_params.paddr),
                        sizeof(k_params.paddr));
@@ -65,10 +72,14 @@ static long pickle_driver_ioctl(struct file *file, unsigned ioc,
       pr_info("%s: copy_to_user failed, errno = %d\n", __func__, err);
       return err;
     }
-
-    pr_info("%s: ioc = ARM64_IOC_PICKLE_DRIVER_MMAP_PADDR\n", __func__);
+    if (ioc == ARM64_IOC_PICKLE_DRIVER_MMAP_PADDR) {
+      pr_info("%s: ioc = ARM64_IOC_PICKLE_DRIVER_MMAP_PADDR\n", __func__);
+    } else if (ioc == ARM64_IOC_PICKLE_DRIVER_PERF_PAGE_PADDR) {
+      pr_info("%s: ioc = ARM64_IOC_PICKLE_DRIVER_PERF_PAGE_PADDR\n", __func__);
+    }
     return 0;
-  } else if (ioc == ARM64_IOC_PICKLE_DRIVER_GET_PROCESS_PAGETABLE_PADDR) {
+  } // Here we return the paddr of the pagetable of the process
+  else if (ioc == ARM64_IOC_PICKLE_DRIVER_GET_PROCESS_PAGETABLE_PADDR) {
     struct process_pagetable_params __user *u_params;
     struct process_pagetable_params k_params;
     struct task_struct *task;
@@ -120,7 +131,8 @@ static long pickle_driver_ioctl(struct file *file, unsigned ioc,
       pr_info("%s: copy_to_user failed, errno = %d\n", __func__, err);
       return err;
     }
-  } else if (ioc == IOC_PICKLE_DRIVER_GET_DEVICE_SPECS) {
+  } // Here we read the device info from the device and return the info
+  else if (ioc == IOC_PICKLE_DRIVER_GET_DEVICE_SPECS) {
     struct device_specs __user *u_params;
     struct device_specs k_params;
 
@@ -146,6 +158,18 @@ static int pickle_driver_open(struct inode *inode, struct file *file) {
   return 0;
 }
 
+// . This function handles the mmap calls to the pickle device.
+// . This function creates virtual page(s) mapped to one of the device's
+// I/O ranges.
+//
+// . There are 2 types of I/O ranges, and we use page length to distinguish the
+// 2 types,
+//   - Type 1: If the page length is a multiple of 4K, the page is mapped to
+// the Pickle device communication channel so that the software can
+// communicate with the device.
+//   - Type 2: If the page length is 16 bytes, this page is a special page that
+// is mapped to the Pickle device performance monitor channel, which is used to
+// gather performance-related data from software.
 static int pickle_driver_data_transfer_mmap(struct file *file,
                                             struct vm_area_struct *vma) {
   // In this function, we allocate a new physical page, then assign the vma
@@ -157,7 +181,6 @@ static int pickle_driver_data_transfer_mmap(struct file *file,
   phys_addr_t page_paddr = virt_to_phys(
       (void *)
           page_vaddr);  // virt_to_phys works for virt address in kernel space
-  uint64_t pfn = page_paddr >> PAGE_SHIFT;
 
   flush_cache_range(vma, vma->vm_start, vma->vm_end);
   pr_info("%s: created a kernel space page at paddr 0x%llx, vaddr 0x%llx\n",
@@ -166,9 +189,25 @@ static int pickle_driver_data_transfer_mmap(struct file *file,
           (u64)vma->vm_start, (u64)vma->vm_end, vma->vm_page_prot.pgprot);
   SetPageReserved(virt_to_page(page_vaddr));
   vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
-  mmap_tracker.paddrs[0] = page_paddr;
-  err = remap_pfn_range(vma, vma->vm_start, pfn, vma->vm_end - vma->vm_start,
+  const uint64_t vm_page_length = vma->vm_end - vma->vm_start;
+  if (vm_page_length % 4096 == 0) { // type 1
+    mmap_tracker.paddrs[0] = page_paddr;
+    const uint64_t pfn = page_paddr >> PAGE_SHIFT;
+    err = remap_pfn_range(vma, vma->vm_start, pfn, vma->vm_end - vma->vm_start,
                         vma->vm_page_prot);
+  } else if (vm_page_length == 16) { // type 2
+    const uint64_t pfn = pickle_device_perf_paddr >> PAGE_SHIFT;
+    err = remap_pfn_range(vma, vma->vm_start, pfn, vma->vm_end - vma->vm_start,
+                        vma->vm_page_prot);
+  } else { // invalid length
+    pr_info(
+        "%s: failed to remap_pfn_range vm_start 0x%llx, vm_end 0x%llx, "
+        "vm_page_prot 0x%llx, err: invalid vm page length, must be 16 bytes "
+        "or a multiple of 4KiB\n",
+        __func__, (u64)vma->vm_start, (u64)vma->vm_end,
+        vma->vm_page_prot.pgprot, err);
+    return -EINVAL;
+  }
   // flush_tlb_range(vma, vma->vm_start, vma->vm_end);
   flush_tlb_all();
   if (err) {
@@ -268,12 +307,14 @@ static int __init pickle_driver_init(void) {
   pickle_device_ptr = ioremap(pickle_device_paddr, 8);
   pickle_device_data_ptr = ioremap(pickle_device_data_paddr, 8);
   pickle_device_spec_ptr = ioremap(pickle_device_spec_paddr, NUM_SPECS * 8);
+  pickle_device_perf_ptr = ioremap(pickle_device_perf_paddr, 16);
   pr_info("%s: DONE\n", __func__);
   return 0;
 }
 module_init(pickle_driver_init);
 
 static void __exit pickle_driver_exit(void) {
+  iounmap(pickle_device_perf_ptr);
   iounmap(pickle_device_spec_ptr);
   iounmap(pickle_device_data_ptr);
   iounmap(pickle_device_ptr);

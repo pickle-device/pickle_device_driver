@@ -26,7 +26,9 @@ struct device_specs {
 
 #define ARM64_IOC_PICKLE_DRIVER_MMAP_PADDR \
   _IOWR('c', 0x1, struct mmap_paddr_params)
+#define ARM64_IOC_PICKLE_DRIVER_PERF_PAGE_PADDR \
+  _IOWR('c', 0x2, struct mmap_paddr_params)
 #define ARM64_IOC_PICKLE_DRIVER_GET_PROCESS_PAGETABLE_PADDR \
-  _IOR('c', 0x2, struct process_pagetable_params)
-#define IOC_PICKLE_DRIVER_GET_DEVICE_SPECS _IOR('c', 0x3, struct device_specs)
+  _IOR('c', 0x3, struct process_pagetable_params)
+#define IOC_PICKLE_DRIVER_GET_DEVICE_SPECS _IOR('c', 0x4, struct device_specs)
 #endif  // PICKLE_DRIVER_HEADER
