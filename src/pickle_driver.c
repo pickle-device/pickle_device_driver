@@ -164,12 +164,12 @@ static int pickle_driver_open(struct inode *inode, struct file *file) {
 //
 // . There are 2 types of I/O ranges, and we use page length to distinguish the
 // 2 types,
-//   - Type 1: If the page length is a multiple of 4K, the page is mapped to
-// the Pickle device communication channel so that the software can
-// communicate with the device.
-//   - Type 2: If the page length is 16 bytes, this page is a special page that
-// is mapped to the Pickle device performance monitor channel, which is used to
-// gather performance-related data from software.
+//   - Type 1: If the mmap length is 4KiB, a 4KiB page is created and mapped to
+// the Pickle device communication channel so that the software can communicate
+// with the device.
+//   - Type 2: If the mmap length is 8KiB, a 4KiB page is created and mapped to
+// the Pickle device performance monitor channel, which is used to gather
+// performance-related data from software.
 static int pickle_driver_data_transfer_mmap(struct file *file,
                                             struct vm_area_struct *vma) {
   // In this function, we allocate a new physical page, then assign the vma
@@ -190,20 +190,25 @@ static int pickle_driver_data_transfer_mmap(struct file *file,
   SetPageReserved(virt_to_page(page_vaddr));
   vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
   const uint64_t vm_page_length = vma->vm_end - vma->vm_start;
-  if (vm_page_length % 4096 == 0) { // type 1
+  uint64_t pfn = 0;
+  if (vm_page_length == PAGE_SIZE) { // type 1
+    pr_info("%s: create type 1 page, vm_page_length: %lld bytes\n",
+            __func__, vm_page_length);
     mmap_tracker.paddrs[0] = page_paddr;
-    const uint64_t pfn = page_paddr >> PAGE_SHIFT;
+    pfn = page_paddr >> PAGE_SHIFT;
     err = remap_pfn_range(vma, vma->vm_start, pfn, vma->vm_end - vma->vm_start,
                         vma->vm_page_prot);
-  } else if (vm_page_length == 16) { // type 2
-    const uint64_t pfn = pickle_device_perf_paddr >> PAGE_SHIFT;
+  } else if (vm_page_length == 2*PAGE_SIZE) { // type 2
+    pr_info("%s: create type 2 page, vm_page_length: %lld bytes\n",
+            __func__, vm_page_length);
+    pfn = pickle_device_perf_paddr >> PAGE_SHIFT;
     err = remap_pfn_range(vma, vma->vm_start, pfn, vma->vm_end - vma->vm_start,
                         vma->vm_page_prot);
   } else { // invalid length
     pr_info(
         "%s: failed to remap_pfn_range vm_start 0x%llx, vm_end 0x%llx, "
-        "vm_page_prot 0x%llx, err: invalid vm page length, must be 16 bytes "
-        "or a multiple of 4KiB\n",
+        "vm_page_prot 0x%llx, err: invalid vm page length, must be 4KiB or "
+        "8KiB\n",
         __func__, (u64)vma->vm_start, (u64)vma->vm_end,
         vma->vm_page_prot.pgprot, err);
     return -EINVAL;
@@ -219,9 +224,10 @@ static int pickle_driver_data_transfer_mmap(struct file *file,
     return err;
   }
   pr_info(
-      "%s: remap_pfn_range vm_start 0x%llx, vm_end 0x%llx, vm_page_prot "
-      "0x%llx\n",
-      __func__, (u64)vma->vm_start, (u64)vma->vm_end, vma->vm_page_prot.pgprot);
+      "%s: remap_pfn_range vm_start 0x%llx, vm_end 0x%llx, pfn 0x%llx, "
+      "vm_page_prot 0x%llx\n",
+      __func__, (u64)vma->vm_start, (u64)vma->vm_end, pfn,
+      vma->vm_page_prot.pgprot);
   pr_info("%s: DONE\n", __func__);
 
   return 0;
