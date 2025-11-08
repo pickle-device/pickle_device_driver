@@ -19,9 +19,15 @@ struct mmap_paddr_params {
   uint64_t paddr;    // output
 };
 
+// prefetch_mode
+#define UNKNOWN_PREFETCH_MODE 0
+#define SINGLE_PREFETCH_MODE 1
+#define BULK_PREFETCH_MODE 2
 struct device_specs {
-  uint64_t availability;       // output
-  uint64_t prefetch_distance;  // output
+  uint64_t availability;         // output
+  uint64_t prefetch_distance;    // output
+  uint64_t prefetch_mode;        // output
+  uint64_t bulk_mode_chunk_size; // output
 };
 
 #define ARM64_IOC_PICKLE_DRIVER_MMAP_PADDR \

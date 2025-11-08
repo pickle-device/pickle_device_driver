@@ -142,6 +142,10 @@ static long pickle_driver_ioctl(struct file *file, unsigned ioc,
         read_spec_from_device(DEVICE_AVAILABILITY_PADDR_OFFSET);
     k_params.prefetch_distance =
         read_spec_from_device(DEVICE_PREFETCH_DISTANCE_PADDR_OFFSET);
+    k_params.prefetch_mode =
+        read_spec_from_device(DEVICE_PREFETCH_MODE);
+    k_params.bulk_mode_chunk_size =
+        read_spec_from_device(DEVICE_BULK_PREFETCH_CHUNK_SIZE);
 
     err = copy_to_user(u_params, &k_params, sizeof(k_params));
     if (err) {
